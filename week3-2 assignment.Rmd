@@ -1,0 +1,221 @@
+---
+title: "week3-2 Assignment - Chi-Square Test"
+subtitle: "Haruna Aremu"
+date: "06-04-2026"
+output: html_document
+---
+
+This analysis applies chi-square goodness-of-fit tests to evaluate whether molecular 
+markers in two populations — mouse and maize — conform to their expected Mendelian 
+segregation ratios. The mouse dataset contains marker genotype data for progeny derived 
+from a backcross population, where each marker is expected to segregate in a 1:1 ratio. 
+The maize dataset contains marker genotype data for an F2 population derived from 
+divergent parents, where markers are expected to follow a 1:2:1 ratio. Markers that 
+significantly deviate from these expectations are considered to show segregation distortion.
+
+# Loading of Data
+
+The datasets are loaded from CSV files and previewed using the `head()` function to 
+confirm their structure before analysis.
+
+```{r mouse data}
+mouse_data <- read.csv("data/mouse.csv")
+
+head(mouse_data)
+
+```
+
+
+```{r maize data}
+maize_data <- read.csv("data/maize.csv")
+
+head(maize_data)
+```
+# Performing Chi-square Test
+
+## Mouse Data
+
+For a backcross population, each marker is expected to segregate in a **1:1 ratio** 
+between the two parental allele classes. A chi-square goodness-of-fit test is applied 
+to each marker to determine whether the observed genotype counts deviate significantly 
+from this expectation. P-values are stored for all 14 markers and plotted in ascending 
+order against the conventional significance threshold of α = 0.05.
+
+```{r}
+# For mouse data, the expected ratio is 1:1
+
+exp <- c(0.5, 0.5)
+p_value <- c()
+
+M <- ncol(mouse_data[, 2: 15])
+
+for (m in 2: 15) {
+  obs <- table(mouse_data[ , m])
+  
+  chi_test <- chisq.test(x = obs, p = exp)
+  
+  p_value[m -1] <- chi_test$p.value
+  
+}
+
+
+```
+
+The sorted p-values are plotted below. Markers falling below the red line (α = 0.05) 
+show statistically significant deviation from the expected 1:1 segregation ratio
+
+```{r}
+
+plot(sort(p_value))
+abline(h = 0.05, col = "red")
+legend("topleft", legend=c("alpha = 0.05"), col=c("red"), lty=1)
+```
+
+A frequency table is used to count how many markers fall below the significance 
+threshold, indicating segregation distortion.
+
+```{r}
+table(p_value < 0.05)
+```
+Only 1 marker shows significant deviation from the expected 1:1 segregation ratio at 
+α = 0.05, suggesting that the vast majority of markers in this backcross population 
+are segregating normally.
+
+## Bonferroni Correction
+
+When testing multiple markers simultaneously, the probability of obtaining at least one 
+false positive increases with the number of tests performed. The Bonferroni correction 
+addresses this multiple testing problem by adjusting the significance threshold to 
+α/M, where M is the total number of markers tested. This is a conservative approach 
+that controls the family-wise error rate.
+
+```{r}
+table(p_value < 0.05/M)
+```
+
+The plot below overlays both the uncorrected (α = 0.05, red) and Bonferroni-corrected 
+(α/M, blue) thresholds, allowing a visual comparison of which markers remain significant 
+after the correction is applied.
+
+```{r}
+plot(sort(p_value))
+abline(h = c(0.05, 0.05/M), col = c("red", "blue"))
+legend("topleft", legend=c("alpha = 0.05"), col=c("red"), lty=1)
+```
+
+
+## Maize Data
+
+For an F2 population, heterozygous parents are expected to produce offspring in a 
+**1:2:1 ratio** (homozygous reference : heterozygous : homozygous alternate), consistent 
+with Mendelian segregation at a single locus. Chi-square goodness-of-fit tests are 
+applied across all 12 markers, and p-values are plotted against the α = 0.05 threshold.
+
+```{r}
+exp_maize <- c(0.25, 0.5, 0.25)
+p_value_maize <- c()
+M_maize <- ncol(maize_data[, 2:13])
+
+for(m in 2:13){
+  obs <- table(maize_data[, m])
+  chi_test <- chisq.test(x = obs, p = exp_maize)
+  p_value_maize[m - 1] <- chi_test$p.value
+}
+
+plot(sort(p_value_maize))
+abline(h = 0.05, col = "red")
+```
+
+A frequency table is used to count how many markers fall below the significance 
+threshold, indicating segregation distortion
+
+```{r}
+table(p_value_maize < 0.05)
+```
+
+Here all  12 markers in the maize F2 population have p-values exceeding the 0.05 significance 
+threshold, indicating that none deviate significantly from the expected 1:2:1 segregation ratio. Since no evidence of segregation distortion is detected, applying a Bonferroni 
+correction is unnecessary in this case.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

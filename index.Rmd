@@ -1,0 +1,452 @@
+---
+title: "Temperature Germination Profile of *Celosia argentea*"
+subtitle: "Exploratory Analysis Across 35 Accessions and Five Temperature Regimes"
+author: "Haruna Aremu"
+date: "04-03-2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  dpi     = 150
+)
+```
+
+---
+
+## Background
+
+This analysis explores the germination behaviour of 35 *Celosia argentea*
+accessions (coded Tca-1 to Tca-35) grown under five temperature regimes
+(15°C, 20°C, 25°C, 30°C, and 35°C). Seeds were sown in controlled-environment
+chambers at Aarhus University, Flakkebjerg Research Facility (February–April 2026),
+with germination counts recorded daily from Day 2 to Day 12 After Sowing (DAS).
+
+Three germination metrics are computed and visualised:
+
+- **Germination Percentage (GP)** — the proportion of seeds that germinated
+- **Mean Germination Time (MGT)** — the average time (in days) to germination,
+  weighted by daily germination counts
+- **Germination Speed Index (GI)** — a speed-weighted sum of daily counts
+  (higher values indicate faster germination)
+
+> **Note on raw data:** The dataset is not included in this repository. It was
+> collected as part of an ongoing, unpublished research collaboration at Aarhus
+> University and cannot be shared publicly without institutional clearance.
+> The script is fully reproducible once a compatible dataset is supplied —
+> see the Data Import section for the expected structure.
+
+---
+
+## Setup
+
+### Packages
+
+```{r packages}
+# pacman::p_load installs missing packages automatically before loading
+pacman::p_load(tidyverse, readxl, tidytext, here)
+```
+
+### Global Theme
+
+A single `theme_set()` call applies a consistent visual style to all figures,
+avoiding repetition across individual plot objects.
+
+```{r global-theme}
+theme_set(
+  theme_bw(base_size = 13) +
+    theme(
+      axis.title            = element_text(size = 16),
+      axis.text             = element_text(size = 14),
+      plot.caption          = element_text(hjust = 0, size = 14,
+                                           face = "bold", colour = "black"),
+      plot.caption.position = "plot",
+      legend.text           = element_text(size = 12),
+      panel.grid            = element_blank()
+    )
+)
+```
+
+### Colour Palette
+
+A named vector maps each temperature level to a fixed colour. Passing this
+to `scale_fill_manual()` and `scale_colour_manual()` ensures colours are
+consistent across all eight figures.
+
+```{r colour-palette}
+temp_colours <- c(
+  "15" = "#818cf8",   # cool violet
+  "20" = "#60a5fa",   # blue
+  "25" = "#4ade80",   # green
+  "30" = "#f59e0b",   # amber
+  "35" = "#f87171",   # coral
+  "40" = "#b91c1c"    # deep red
+)
+```
+
+### Save Helper
+
+A small wrapper around `ggsave()` reduces repetition and ensures all output
+files land in the `outputs/` folder with consistent resolution and units.
+
+```{r save-helper}
+save_plot <- function(filename, plot, h = 7, w = 12, format = "png") {
+  ggsave(
+    paste0(filename, ".", format), plot,
+    path   = here("outputs"),
+    height = h, width = w,
+    units  = "in", dpi = 300,
+    bg     = "white"
+  )
+}
+```
+
+---
+
+## Data Import and Transformation
+
+### Import
+
+The dataset is expected as an Excel file with one row per accession-temperature
+combination and daily germination counts in columns named `DAS2`, `DAS3`, ...,
+`DAS12`. Temperature 45°C is excluded from all analyses (insufficient
+germination at that extreme).
+
+```{r import}
+# Replace the path below with your own file location
+celo <- read_xlsx(here("data/celosia_temperature_stress_data.xlsx"),
+                  range = "A1:M246")
+```
+
+### Reshape to Long Format
+
+`pivot_longer()` converts the wide DAS columns into a tidy long format,
+with one row per accession-temperature-day observation. `str_remove()`
+strips the "DAS" prefix so `das` is numeric and usable on plot axes.
+
+```{r reshape}
+celo_new <- celo %>%
+  mutate(
+    Acc  = factor(Acc, levels = paste0("Tca- ", 1:35)),
+    Temp = factor(Temp)
+  ) %>%
+  pivot_longer(
+    cols      = matches("DAS"),
+    names_to  = "das",
+    values_to = "count"
+  ) %>%
+  mutate(das = as.numeric(str_remove(das, "DAS"))) %>%
+  filter(Temp != 45)
+```
+
+### Derived Datasets
+
+Three summary datasets are computed once here and reused across all figures,
+avoiding redundant computation inside individual plot chunks.
+
+```{r derived-datasets}
+# ── Germination Percentage (GP) ───────────────────────────────
+# Maximum cumulative count divided by total seeds sown (25 per pot)
+germination_perc <- celo_new %>%
+  group_by(Acc, Temp) %>%
+  reframe(
+    max_count = max(count, na.rm = TRUE),
+    gp        = (max_count / 25) * 100
+  )
+
+# ── Mean Germination Time (MGT) ───────────────────────────────
+# Weighted mean of DAS, weighted by daily germination increments.
+# pmax() floors negative increments (data entry artefacts) to zero.
+# NA is returned for accession-temperature combinations with zero
+# total germination, avoiding division by zero.
+mgt <- celo_new %>%
+  arrange(Acc, Temp, das) %>%
+  group_by(Acc, Temp) %>%
+  mutate(daily = pmax(count - lag(count, default = 0), 0)) %>%
+  reframe(
+    total_germination = sum(daily, na.rm = TRUE),
+    mgt = if_else(
+      total_germination > 0,
+      sum((daily * das) / total_germination, na.rm = TRUE),
+      NA_real_
+    )
+  )
+
+# ── Germination Speed Index (GI) ─────────────────────────────
+# Sum of daily germination counts divided by the DAS at which they
+# occurred. Higher values indicate faster, earlier germination.
+gi <- celo_new %>%
+  arrange(Acc, Temp, das) %>%
+  group_by(Acc, Temp) %>%
+  mutate(daily = pmax(count - lag(count, default = 0), 0)) %>%
+  reframe(gi = sum(daily / das, na.rm = TRUE))
+```
+
+---
+
+## Figures
+
+### Figure 1 — Germination Percentage Heatmap
+
+The heatmap gives the most complete overview: every accession at every
+temperature in a single panel. Diverging fill (dark → blue → green) makes
+the 50% midpoint immediately readable. White text is overlaid for precise
+values.
+
+```{r fig1-heatmap, fig.height=9, fig.width=12}
+fig1_heatmap <- ggplot(germination_perc,
+                       aes(Temp, fct_rev(Acc), fill = gp)) +
+  geom_tile(colour = "black", linewidth = 0.3) +
+  geom_text(aes(label = round(gp, 1)), size = 4.5, colour = "white") +
+  scale_fill_gradient2(
+    low      = "#1a2332",
+    mid      = "#2563eb",
+    high     = "#4ade80",
+    midpoint = 50,
+    limits   = c(0, 100),
+    name     = "Germination (%)"
+  ) +
+  labs(
+    x       = "Temperature (\u00b0C)",
+    y       = "Accession",
+    caption = "Figure 1: Germination Percentage (%) of 35 Celosia argentea Accessions Across Five Temperatures"
+  ) +
+  theme(panel.border = element_blank())
+
+fig1_heatmap
+
+```
+
+---
+
+### Figure 2 — GP Distribution by Temperature (Boxplot)
+
+Moving from individual accessions to a population summary, this boxplot
+shows how GP varies across accessions at each temperature. Outliers are
+suppressed to keep the focus on the bulk distribution.
+
+```{r fig2-gp-boxplot, fig.height=7, fig.width=12}
+fig2_gp_boxplot <- ggplot(germination_perc,
+                          aes(x = Temp, y = gp, fill = Temp)) +
+  geom_boxplot(outliers = FALSE, show.legend = FALSE, width = 0.8) +
+  scale_fill_manual(values = temp_colours) +
+  labs(
+    x       = "Temperature (°C)",
+    y       = "Germination Percentage (%)",
+    caption = "Figure 2: Distribution of Germination Percentage (%) Across Accessions by Temperature"
+  )
+
+fig2_gp_boxplot
+save_plot("fig2_gp_boxplot", fig2_gp_boxplot)
+```
+
+---
+
+### Figure 3 — Mean Daily Germination by Temperature Over Time
+
+Grouped bar charts show when germination peaks at each temperature.
+`position = "dodge"` separates temperatures within each DAS. Error bars
+are ±1 SE computed over all accessions. This bridges the GP summary (Fig 2)
+into the time-course dynamics shown in Fig 4.
+
+```{r fig3-daily-germination, fig.height=7, fig.width=12}
+fig3_daily_germination <- celo_new %>%
+  arrange(Acc, Temp, das) %>%
+  group_by(Acc, Temp) %>%
+  mutate(daily = pmax(count - lag(count, default = 0), 0)) %>%
+  group_by(Temp, das) %>%
+  reframe(
+    mean_daily = mean(daily, na.rm = TRUE),
+    # NA-aware denominator: only non-missing observations contribute to SE
+    se_daily   = sd(daily, na.rm = TRUE) / sqrt(sum(!is.na(daily)))
+  ) %>%
+  ggplot(aes(x = das, y = mean_daily, fill = Temp)) +
+  geom_col(position = "dodge", colour = "black", linewidth = 0.2) +
+  geom_errorbar(
+    aes(ymin = mean_daily - se_daily, ymax = mean_daily + se_daily),
+    position = position_dodge(0.9), width = 0.3
+  ) +
+  scale_fill_manual(values = temp_colours, name = "Temperature (°C)") +
+  scale_x_continuous(breaks = seq(2, 12, 1)) +
+  labs(
+    x       = "Day After Sowing (DAS)",
+    y       = "Mean Daily Germination (seeds)",
+    caption = "Figure 3: Mean Daily Germination Count Across Accessions by Temperature"
+  )
+
+fig3_daily_germination
+save_plot("fig3_daily_germination", fig3_daily_germination)
+```
+
+---
+
+### Figure 4 — Cumulative Germination Curves per Accession
+
+Faceted by accession (7 columns × 5 rows), each panel shows the full
+time course of cumulative germination across temperatures. This is the
+most data-dense figure and is best read alongside Fig 1 to connect
+final GP values to the trajectories that produced them.
+
+```{r fig4-trend, fig.height=12, fig.width=14}
+fig4_trend <- ggplot(celo_new, aes(das, count, colour = Temp)) +
+  geom_line(linewidth = 1, na.rm = TRUE) +
+  geom_point(size = 2, na.rm = TRUE) +
+  facet_wrap(~Acc, ncol = 7) +
+  scale_x_continuous(breaks = seq(2, 12, 2)) +
+  scale_colour_manual(values = temp_colours, name = "Temperature (°C)") +
+  theme(
+    legend.position  = "bottom",
+    strip.background = element_rect(fill = "grey92"),
+    axis.title.x     = element_text(size = 12),
+    axis.title.y     = element_text(size = 12),
+    axis.text.x      = element_text(size = 9)
+  ) +
+  labs(
+    x       = "Days After Sowing (DAS)",
+    y       = "Cumulative Germinated Seeds",
+    caption = "Figure 4: Cumulative Germination Curves for 35 Celosia argentea Accessions Across Five Temperatures"
+  )
+
+fig4_trend
+save_plot("fig4_trend", fig4_trend, h = 12, w = 14, format = "tiff")
+```
+
+---
+
+### Figure 5 — MGT per Accession (Faceted Bar Chart)
+
+Shifting from *how many* germinated to *how fast*, this figure mirrors
+the structure of Fig 1 at the accession level. Shorter bars indicate
+faster germination. Temperature 40°C is absent where germination was
+zero (MGT returns NA and is silently dropped by `geom_col()`).
+
+```{r fig5-mgt-accession, fig.height=12, fig.width=14}
+fig5_mgt_accession <- ggplot(mgt, aes(Temp, mgt, fill = Temp)) +
+  geom_col(na.rm = TRUE) +
+  scale_fill_manual(values = temp_colours, name = "Temperature (°C)") +
+  facet_wrap(~Acc, ncol = 7, scales = "free_x") +
+  theme(
+    legend.position  = "bottom",
+    axis.text.y.left = element_text(size = 11.5)
+  ) +
+  labs(
+    x       = "Temperature (°C)",
+    y       = "Mean Germination Time (Days)",
+    caption = "Figure 5: Mean Germination Time (MGT) of 35 Celosia argentea Accessions"
+  )
+
+fig5_mgt_accession
+save_plot("fig5_mgt_accession", fig5_mgt_accession, h = 12, w = 14)
+```
+
+---
+
+### Figure 6 — MGT Distribution by Temperature (Violin + Boxplot)
+
+The violin layer reveals the full distribution shape across accessions;
+the inner boxplot provides median and IQR. Together they show both the
+central tendency and spread of germination speed at each temperature,
+summarising Fig 5 in a single panel.
+
+```{r fig6-mgt-violin, fig.height=7, fig.width=12}
+fig6_mgt_violin <- ggplot(mgt, aes(Temp, mgt, fill = Temp)) +
+  geom_violin(width = 0.8, alpha = 0.4, show.legend = FALSE) +
+  geom_boxplot(width = 0.2, show.legend = FALSE, outliers = FALSE) +
+  scale_fill_manual(values = temp_colours) +
+  labs(
+    x       = "Temperature (°C)",
+    y       = "Mean Germination Time (Days)",
+    caption = "Figure 6: Distribution of Mean Germination Time (MGT) Across Accessions by Temperature"
+  )
+
+fig6_mgt_violin
+save_plot("fig6_mgt_violin", fig6_mgt_violin)
+```
+
+---
+
+### Figure 7 — GI per Accession (Faceted Bar Chart)
+
+The Germination Speed Index complements MGT: while MGT measures *when*
+germination occurs, GI weights seeds that germinate earlier more heavily,
+giving a single score that captures both speed and volume. This figure
+mirrors the structure of Fig 5 for direct comparison.
+
+```{r fig7-gi-accession, fig.height=12, fig.width=14}
+fig7_gi_accession <- ggplot(gi, aes(Temp, gi, fill = Temp)) +
+  geom_col() +
+  scale_fill_manual(values = temp_colours, name = "Temperature (°C)") +
+  facet_wrap(~Acc, ncol = 7) +
+  theme(legend.position = "bottom") +
+  labs(
+    x       = "Temperature (°C)",
+    y       = "Germination Speed Index",
+    caption = "Figure 7: Germination Speed Index (GI) of 35 Celosia argentea Accessions Across Five Temperatures"
+  )
+
+fig7_gi_accession
+save_plot("fig7_gi_accession", fig7_gi_accession, h = 12, w = 14, format = "tiff")
+```
+
+---
+
+### Figure 8 — GI Distribution by Temperature (Boxplot)
+
+The closing figure summarises GI across accessions per temperature,
+completing the GP → MGT → GI narrative arc. Higher GI and lower MGT
+at the same temperature confirm faster, more vigorous germination —
+the two metrics should be interpreted together.
+
+```{r fig8-gi-boxplot, fig.height=7, fig.width=12}
+fig8_gi_boxplot <- ggplot(gi, aes(Temp, gi, fill = Temp)) +
+  geom_boxplot(width = 0.8, outliers = FALSE, show.legend = FALSE) +
+  scale_fill_manual(values = temp_colours) +
+  labs(
+    x       = "Temperature (°C)",
+    y       = "Germination Speed Index",
+    caption = "Figure 8: Distribution of Germination Speed Index (GI) Across Accessions by Temperature"
+  )
+
+fig8_gi_boxplot
+save_plot("fig8_gi_boxplot", fig8_gi_boxplot)
+```
+
+---
+
+## Summary
+
+```{r summary-table, echo=FALSE}
+germination_perc %>%
+  group_by(Temp) %>%
+  reframe(
+    Mean_GP = round(mean(gp, na.rm = TRUE), 1),
+    SD_GP   = round(sd(gp, na.rm = TRUE), 1),
+    Min_GP  = round(min(gp, na.rm = TRUE), 1),
+    Max_GP  = round(max(gp, na.rm = TRUE), 1)
+  ) %>%
+  knitr::kable(
+    col.names = c("Temperature (°C)", "Mean GP (%)", "SD", "Min (%)", "Max (%)"),
+    caption   = "Table 1: Summary of Germination Percentage by Temperature"
+  )
+```
+
+**Key findings:**
+
+- Optimal temperature for germination capacity (GP): **35°C**
+- Optimal temperature for germination speed (MGT / GI): **30°C**
+- Germination at 15°C was consistently low across all accessions
+- Considerable inter-accession variation is visible at all temperatures,
+  suggesting heritable differences in thermal tolerance worth further investigation
+
+
