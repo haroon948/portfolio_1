@@ -1,0 +1,242 @@
+---
+title: "Linkage Mapping Analysis"
+subtitle: "Two-Point Recombination Fraction Estimation in Backcross and F2 Populations"
+author: "Haruna Isola Aremu"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    number-sections: true
+    theme: flatly
+    code-fold: true
+    code-tools: true
+    highlight-style: github
+    fig-width: 7
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+  echo: true
+---
+
+## Introduction
+
+This document presents a two-point linkage analysis for estimating recombination fractions between marker pairs in two populations: a **backcross (BC) population** derived from mouse (*Mus musculus*) and an **F2 population** derived from maize (*Zea mays*). Recombination fractions ($\hat{r}$) and LOD scores are estimated for all pairwise marker combinations in each population.
+
+---
+
+## Data Loading
+
+```{r}
+library(tidyverse)
+
+# load data
+mouse <- read.csv("data/mouse.csv")   # backcross population
+maize <- read.csv("data/maize.csv")   # F2 population
+
+# select marker columns only
+mouse_new <- mouse[, 2:15]
+maize_new <- maize[, 2:13]
+```
+
+---
+
+## Backcross (BC) Population
+
+### Background
+
+In a backcross population, each individual carries one chromosome from the recurrent parent and one from the donor parent. Only two genotypic classes are expected at each locus. For two linked markers, four classes are observed:
+
+- **Non-recombinants:** parental combinations (classes 1 and 4)
+- **Recombinants:** non-parental combinations (classes 2 and 3)
+
+The recombination fraction is estimated as:
+
+$$\hat{r} = \frac{n_r}{n_r + n_{nr}}$$
+
+Significance is assessed via a likelihood ratio test (LRT), converted to a LOD score:
+
+$$\text{LOD} = \text{LRT} \times 0.2172$$
+
+### Observed Genotype Frequencies
+
+A quick look at the contingency table for markers M3 and M9:
+
+```{r}
+table(mouse_new[, 3], mouse_new[, 9])
+```
+
+### Two-Point Estimation Function (BC)
+
+```{r}
+twopts_bc <- function(m1, m2, data) {
+  n      <- table(data[, m1], data[, m2])
+  n_nr   <- sum(n[c(1, 4)])
+  n_r    <- sum(n[2:3])
+  r_hat  <- n_r / (n_r + n_nr)
+  log_lik_ho <- (n_nr + n_r) * log(0.5 / 2)
+  log_lik_ha <- (n_nr * log((1 - r_hat) / 2)) + (n_r * log(r_hat / 2))
+  lrt    <- -2 * (log_lik_ho - log_lik_ha)
+  lod    <- lrt * 0.2172
+  return(c(r_hat, lod))
+}
+```
+
+### Pairwise Analysis: All Marker Combinations
+
+```{r}
+results_bc <- array(NA, dim = c(ncol(mouse_new), ncol(mouse_new), 2))
+
+for (m1 in 1:ncol(mouse_new)) {
+  for (m2 in m1:ncol(mouse_new)) {
+    results_bc[m1, m2, ] <- twopts_bc(m1, m2, data = mouse_new)
+  }
+}
+```
+
+### Recombination Fraction Heatmap (BC)
+
+```{r}
+#| fig-cap: "Pairwise recombination fractions among BC markers. Warm colours indicate higher recombination (unlinked); cool colours indicate lower recombination (linked)."
+#| label: fig-bc-heatmap
+
+col <- rainbow(n = 500, start = 0, end = 0.75)
+
+image(results_bc[,, 1], bty = "n", col = col,
+      main = "BC Population: Pairwise Recombination Fractions",
+      xlab = "Marker index", ylab = "Marker index")
+
+legend(0.8, 0.3, c("0", "1/4", "1/2"),
+       fill = col[c(1, 250, 500)],
+       title = "r")
+```
+
+---
+
+## F2 Population
+
+### Background
+
+In an F2 population, individuals can be homozygous or heterozygous at each locus, giving nine possible two-locus genotypic classes. Five summary counts are used for estimation:
+
+| Count | Class |
+|-------|-------|
+| $n_{nr}$ | Double homozygous parental (classes 1, 9) |
+| $n_{r1}$ | Single recombinant heterozygotes (classes 2, 4, 6, 8) |
+| $n_{r2}$ | Double homozygous recombinant (classes 3, 7) |
+| $n_{dh}$ | Double heterozygote (class 5) |
+
+Because the double heterozygote class (AaBb) is ambiguous — it can arise from parental or recombinant gametes — the **EM algorithm** is used to estimate $\hat{r}$ iteratively.
+
+### Observed Genotype Frequencies
+
+```{r}
+table(maize_new[, 2], maize_new[, 12])
+```
+
+### Count Function (F2)
+
+```{r}
+count_f2 <- function(m1, m2, data) {
+  n     <- table(data[, m1], data[, m2])
+  n_nr  <- sum(n[c(1, 9)])
+  n_r1  <- sum(n[c(2, 4, 6, 8)])
+  n_r2  <- sum(n[c(3, 7)])
+  n_dh  <- n[5]
+  return(list(n = n, n.nr = n_nr, n.r1 = n_r1, n.r2 = n_r2, n.dh = n_dh))
+}
+```
+
+### EM Algorithm
+
+The EM algorithm iterates the E-step (estimating the proportion of double heterozygotes arising from parental gametes, $q$) and the M-step (updating $\hat{r}$) until convergence:
+
+$$q = \frac{r^2}{r^2 + (1-r)^2}$$
+
+$$\hat{r}_{new} = \frac{n_{r1} + 2(n_{r2} + q \cdot n_{dh})}{2 \sum n}$$
+
+```{r}
+em <- function(counts, r.start = 0.3, min.diff = 1e-10, verbose = TRUE) {
+  n     <- counts$n
+  n.r1  <- counts$n.r1
+  n.r2  <- counts$n.r2
+  n.dh  <- counts$n.dh
+  r.hat <- c(-10, r.start)
+  r     <- r.start
+  k     <- 2
+  while (abs(r.hat[k] - r.hat[k - 1]) > min.diff) {
+    k        <- k + 1
+    q        <- r^2 / (r^2 + (1 - r)^2)
+    r        <- (n.r1 + 2 * (n.r2 + q * n.dh)) / (2 * sum(n))
+    r.hat[k] <- r
+    if (verbose) cat("k =", k - 2, "-->", r, "\n")
+  }
+  return(r.hat[-c(1)])
+}
+```
+
+### Two-Point Test Function (F2)
+
+```{r}
+twopts.f2 <- function(counts, r) {
+  n     <- counts$n
+  n.nr  <- counts$n.nr
+  n.r1  <- counts$n.r1
+  n.r2  <- counts$n.r2
+  n.dh  <- counts$n.dh
+  log.Lik.H0 <- (n.nr * log((1 - 0.5)^2 / 4) +
+                 n.r1 * log((0.5 * (1 - 0.5)) / 2) +
+                 n.r2 * log(0.5^2 / 4) +
+                 n.dh * log((1 - 0.5)^2 / 2 + 0.5^2 / 2))
+  log.Lik.H1 <- (n.nr * log((1 - r)^2 / 4) +
+                 n.r1 * log((r * (1 - r)) / 2) +
+                 n.r2 * log(r^2 / 4) +
+                 n.dh * log(((1 - r)^2 / 2) + r^2 / 2))
+  LRT <- -2 * (log.Lik.H0 - log.Lik.H1)
+  LOD <- LRT * 0.2172
+  return(c(LOD))
+}
+```
+
+### Pairwise Analysis: All Marker Combinations
+
+```{r}
+results_f2 <- array(NA, dim = c(ncol(maize_new), ncol(maize_new), 2))
+
+for (i in 1:ncol(maize_new)) {
+  for (j in i:ncol(maize_new)) {
+    counts              <- count_f2(i, j, data = maize_new)
+    results_f2[i, j, 1] <- tail(em(counts = counts, r.start = 0.25,
+                                    verbose = FALSE), 1)
+    results_f2[i, j, 2] <- twopts.f2(counts = counts,
+                                       r = results_f2[i, j, 1])
+  }
+}
+```
+
+### Recombination Fraction Heatmap (F2)
+
+```{r}
+#| fig-cap: "Pairwise recombination fractions among F2 markers estimated via the EM algorithm. Linked marker pairs appear in cool colours."
+#| label: fig-f2-heatmap
+
+col <- rainbow(n = 500, start = 0, end = 0.70)
+
+image(results_f2[,, 1], bty = "n", col = col,
+      main = "F2 Population: Pairwise Recombination Fractions",
+      xlab = "Marker index", ylab = "Marker index")
+
+legend(0.8, 0.3, c("0", "1/4", "1/2"),
+       fill = col[c(1, 250, 500)],
+       title = "r")
+```
+
+---
+
+## Session Information
+
+```{r}
+sessionInfo()
+```
